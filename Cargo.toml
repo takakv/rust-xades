@@ -2,6 +2,7 @@
 name = "xades"
 version = "0.1.0"
 edition = "2024"
+description = "Verify XAdES baseline signatures"
 license = "Apache-2.0"
 homepage = "https://github.com/takakv/xades-rs"
 repository = "https://github.com/takakv/xades-rs"
