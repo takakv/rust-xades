@@ -22,3 +22,7 @@ x509-cert = "0.2.5"
 
 [dev-dependencies]
 asice = "0.1.0"
+
+# tsp-ltv 0.3.1 only supports <= 64-bit nonces and select ECDSA-SHA2 combinations
+[patch.crates-io]
+tsp-ltv = { git = "https://github.com/takakv/tsp-ltv.git" }

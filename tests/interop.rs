@@ -1,13 +1,10 @@
 use asice::Container;
 
-use xades::{validate, DataObject, ValidationOptions};
+use xades::{validate, DataObject, Profile, ValidationOptions};
+
+const XADES_LT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/xades-lt.asice");
 
 // Containers from https://github.com/open-eid/SiVa
-const BDOC_TM_2_SIG: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/bdoc_tm_valid_2_signatures.asice"
-);
-
 const ASICE_XADES_T: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/asiceWithXades-t-level.asice"
@@ -34,22 +31,20 @@ fn trust_options() -> ValidationOptions {
 }
 
 #[test]
-fn validates_bdoc_tm_container() {
-    let container = Container::open_file(BDOC_TM_2_SIG).unwrap();
+fn validates_xades_lt_container() {
+    let container = Container::open_file(XADES_LT).unwrap();
     let files = data_objects(&container);
-    assert_eq!(container.signatures().len(), 2);
+    assert_eq!(container.signatures().len(), 1);
 
-    for signature in container.signatures() {
-        let results = validate(&signature.xml, &files, &trust_options()).unwrap();
-        assert_eq!(results.len(), 1);
-        let sig = &results[0];
-        assert!(
-            sig.is_valid(),
-            "errors: {:?}, warnings: {:?}",
-            sig.errors,
-            sig.warnings
-        );
-    }
+    let results = validate(&container.signatures()[0].xml, &files, &trust_options()).unwrap();
+    assert_eq!(results.len(), 1);
+    let sig = &results[0];
+    assert!(
+        sig.is_valid(),
+        "errors: {:?}, warnings: {:?}",
+        sig.errors,
+        sig.warnings
+    );
 }
 
 #[test]
@@ -67,4 +62,5 @@ fn validates_xades_t_container() {
         sig.errors,
         sig.warnings
     );
+    assert_eq!(sig.profile, Profile::T);
 }

@@ -48,6 +48,20 @@ pub(crate) fn verify_core(
         sp_node: None,
     };
 
+    // KeyInfo certificates.
+    if let Some(key_info) = xml::child(doc, sig_node, ns::DSIG, "KeyInfo") {
+        for cert_node in xml::descendants(doc, key_info, ns::DSIG, "X509Certificate") {
+            match B64.decode(xml::text(doc, cert_node).replace(['\n', '\r', ' '], "")) {
+                Ok(der) if outcome.cert_der.is_none() => outcome.cert_der = Some(der),
+                Ok(der) => outcome.extra_certs.push(der),
+                Err(e) => errors.push(format!("KeyInfo certificate is not valid base64: {e}")),
+            }
+        }
+    }
+    if outcome.cert_der.is_none() {
+        errors.push("KeyInfo contains no X509Certificate".into());
+    }
+
     let Some(signed_info) = xml::child(doc, sig_node, ns::DSIG, "SignedInfo") else {
         errors.push("missing SignedInfo".into());
         return outcome;
@@ -234,20 +248,6 @@ pub(crate) fn verify_core(
             Err(e) => errors.push(format!("signature verification failed: {e}")),
         },
         Err(e) => errors.push(format!("signature method: {e}")),
-    }
-
-    // KeyInfo certificates.
-    if let Some(key_info) = xml::child(doc, sig_node, ns::DSIG, "KeyInfo") {
-        for cert_node in xml::descendants(doc, key_info, ns::DSIG, "X509Certificate") {
-            match B64.decode(xml::text(doc, cert_node).replace(['\n', '\r', ' '], "")) {
-                Ok(der) if outcome.cert_der.is_none() => outcome.cert_der = Some(der),
-                Ok(der) => outcome.extra_certs.push(der),
-                Err(e) => errors.push(format!("KeyInfo certificate is not valid base64: {e}")),
-            }
-        }
-    }
-    if outcome.cert_der.is_none() {
-        errors.push("KeyInfo contains no X509Certificate".into());
     }
 
     outcome

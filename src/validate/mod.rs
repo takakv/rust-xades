@@ -1,4 +1,6 @@
 mod dsig;
+mod ltv;
+mod xades;
 
 use chrono::{DateTime, Utc};
 use x509_cert::der::Decode;
@@ -12,9 +14,9 @@ use crate::{ns, xml, DataObject};
 pub enum Profile {
     /// Signature only
     B,
+    /// B with a signature timestamp
+    T,
     // TODO: implement necessary checks to satisfy other profiles.
-    // /// B with a signature timestamp
-    // T,
     // /// T with validation data (certificate + OCSP response)
     // LT,
     // /// LT with archive timestamps for long-term validity.
@@ -35,6 +37,8 @@ pub struct SignatureValidation {
     pub signer_subject: Option<String>,
     /// SigningTime as claimed in the signed properties.
     pub claimed_signing_time: Option<String>,
+    /// Authenticated time of the signature timestamp (T/LT).
+    pub timestamp_time: Option<DateTime<Utc>>,
 }
 
 impl SignatureValidation {
@@ -97,79 +101,110 @@ pub fn validate(
             .map_err(|e| LibError::Certificate(format!("trust anchor: {e}")))?;
     }
 
-    {
-        let xmldoc = match bergshamra_xml::XmlDocument::parse(signature_xml.to_owned()) {
-            Ok(d) => d,
-            Err(e) => {
-                return Ok(vec![invalid_document(format!(
-                    "signature document is not well-formed XML: {e}"
-                ))]);
-            }
-        };
-        let doc = match xmldoc.parse_doc() {
-            Ok(d) => d,
-            Err(e) => {
-                return Ok(vec![invalid_document(format!("signature document: {e}"))]);
-            }
-        };
-        // Rejects duplicate Ids — the classic signature-wrapping vector.
-        let id_map = match xmldoc.build_id_map(&doc) {
-            Ok(m) => m,
-            Err(e) => {
-                return Ok(vec![invalid_document(format!("ID attributes: {e}"))]);
-            }
-        };
-
-        let sig_nodes = xml::descendants(&doc, doc.root(), ns::DSIG, "Signature");
-        if sig_nodes.is_empty() {
-            return Ok(vec![invalid_document(
-                "document contains no ds:Signature".into(),
-            )]);
+    let xmldoc = match bergshamra_xml::XmlDocument::parse(signature_xml.to_owned()) {
+        Ok(d) => d,
+        Err(e) => {
+            return Ok(vec![invalid_document(format!(
+                "signature document is not well-formed XML: {e}"
+            ))]);
         }
-        for sig_node in sig_nodes {
-            let mut sv = SignatureValidation {
-                signature_id: xml::attr(&doc, sig_node, "Id").map(str::to_owned),
-                profile: Profile::B,
-                errors: Vec::new(),
-                warnings: Vec::new(),
-                signer_cert_der: None,
-                signer_subject: None,
-                claimed_signing_time: None,
-            };
-
-            let core = dsig::verify_core(&doc, &id_map, sig_node, files, &mut sv.errors);
-            sv.signer_cert_der = core.cert_der.clone();
-
-            // TODO: add validation for UnsignedProperties.
-
-            let leaf = match core.cert_der.as_deref().map(Certificate::from_der) {
-                Some(Ok(cert)) => {
-                    sv.signer_subject = Some(cert.tbs_certificate.subject.to_string());
-                    Some(cert)
-                }
-                Some(Err(e)) => {
-                    sv.errors
-                        .push(format!("signer certificate does not parse: {e}"));
-                    None
-                }
-                None => None,
-            };
-
-            if let Some(leaf) = leaf {
-                let keyinfo_extras: Vec<Certificate> = core
-                    .extra_certs
-                    .iter()
-                    .filter_map(|der| Certificate::from_der(der).ok())
-                    .collect();
-                let pool = keyinfo_extras.clone();
-
-                let at = options.validation_time.unwrap_or_else(Utc::now);
-                check_chain(&leaf, &pool, &trust, at, &mut sv.errors);
-            }
-
-            results.push(sv);
+    };
+    let doc = match xmldoc.parse_doc() {
+        Ok(d) => d,
+        Err(e) => {
+            return Ok(vec![invalid_document(format!("signature document: {e}"))]);
         }
+    };
+
+    // Rejects duplicate Ids.
+    let id_map = match xmldoc.build_id_map(&doc) {
+        Ok(m) => m,
+        Err(e) => {
+            return Ok(vec![invalid_document(format!("ID attributes: {e}"))]);
+        }
+    };
+
+    let sig_nodes = xml::descendants(&doc, doc.root(), ns::DSIG, "Signature");
+    if sig_nodes.is_empty() {
+        return Ok(vec![invalid_document(
+            "document contains no ds:Signature".into(),
+        )]);
     }
+    for sig_node in sig_nodes {
+        let mut sv = SignatureValidation {
+            signature_id: xml::attr(&doc, sig_node, "Id").map(str::to_owned),
+            profile: Profile::B,
+            errors: Vec::new(),
+            warnings: Vec::new(),
+            signer_cert_der: None,
+            signer_subject: None,
+            claimed_signing_time: None,
+            timestamp_time: None,
+        };
+
+        let core = dsig::verify_core(&doc, &id_map, sig_node, files, &mut sv.errors);
+        sv.signer_cert_der = core.cert_der.clone();
+
+        let mut unsigned_node = None;
+        if let (Some(sp_node), Some(cert_der)) = (core.sp_node, core.cert_der.as_deref()) {
+            let xa =
+                xades::check_signed_properties(&doc, sig_node, sp_node, cert_der, &mut sv.errors);
+            sv.profile = xa.profile;
+            sv.claimed_signing_time = xa.claimed_signing_time;
+            unsigned_node = xa.unsigned_node;
+        } else if core.sp_node.is_none() {
+            sv.errors
+                .push("SignedProperties could not be resolved".into());
+        }
+
+        let leaf = match core.cert_der.as_deref().map(Certificate::from_der) {
+            Some(Ok(cert)) => {
+                sv.signer_subject = Some(cert.tbs_certificate.subject.to_string());
+                Some(cert)
+            }
+            Some(Err(e)) => {
+                sv.errors
+                    .push(format!("signer certificate does not parse: {e}"));
+                None
+            }
+            None => None,
+        };
+
+        if let Some(leaf) = leaf {
+            let keyinfo_extras: Vec<Certificate> = core
+                .extra_certs
+                .iter()
+                .filter_map(|der| Certificate::from_der(der).ok())
+                .collect();
+            let mut pool = keyinfo_extras.clone();
+
+            if matches!(sv.profile, Profile::T) {
+                if let Some(unsigned) = unsigned_node {
+                    let out = ltv::verify_unsigned(
+                        &doc,
+                        sig_node,
+                        unsigned,
+                        &trust,
+                        &mut sv.errors,
+                        &mut sv.warnings,
+                    );
+                    sv.timestamp_time = out.timestamp_time;
+                    pool.extend(out.pool);
+                }
+                if sv.profile == Profile::T {
+                    sv.warnings.push(
+                        "T-level signature: no embedded revocation proof for the signer".into(),
+                    );
+                }
+            }
+
+            let at = options.validation_time.unwrap_or_else(Utc::now);
+            check_chain(&leaf, &pool, &trust, at, &mut sv.errors);
+        }
+
+        results.push(sv);
+    }
+
     Ok(results)
 }
 
@@ -182,6 +217,7 @@ fn invalid_document(error: String) -> SignatureValidation {
         signer_cert_der: None,
         signer_subject: None,
         claimed_signing_time: None,
+        timestamp_time: None,
     }
 }
 
