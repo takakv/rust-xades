@@ -2,6 +2,8 @@ mod dsig;
 mod ltv;
 mod xades;
 
+pub(crate) use dsig::ALLOWED_DIGESTS;
+
 use chrono::{DateTime, Utc};
 use x509_cert::der::Decode;
 use x509_cert::Certificate;

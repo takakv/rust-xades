@@ -1,9 +1,14 @@
+pub mod crypto;
+pub mod error;
+pub mod ns;
+pub mod sig;
 pub mod validate;
 
-pub mod error;
-mod ns;
 mod xml;
 
+pub use crypto::{Signer, SoftwareSigner};
+pub use error::{LibError, Result};
+pub use sig::{prepare_signature, sign, CreatedSignature, PreparedSignature, SigningOptions};
 pub use validate::{validate, Profile, SignatureValidation, ValidationOptions};
 
 /// A data object covered by a signature.
