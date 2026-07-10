@@ -10,21 +10,22 @@ use crate::error::{LibError, Result};
 use crate::{ns, xml, DataObject};
 
 /// XAdES baseline profile of a signature.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Profile {
     /// Signature only
+    #[default]
     B,
     /// B with a signature timestamp
     T,
-    // TODO: implement necessary checks to satisfy other profiles.
-    // /// T with validation data (certificate + OCSP response)
-    // LT,
+    /// T with validation data (certificate + OCSP response)
+    LT,
+    // TODO: implement necessary validation for LTA
     // /// LT with archive timestamps for long-term validity.
     // LTA,
 }
 
 /// Result of validating one signature.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct SignatureValidation {
     /// `Id` attribute of the `ds:Signature` element.
     pub signature_id: Option<String>,
@@ -39,6 +40,8 @@ pub struct SignatureValidation {
     pub claimed_signing_time: Option<String>,
     /// Authenticated time of the signature timestamp (T/LT).
     pub timestamp_time: Option<DateTime<Utc>>,
+    /// producedAt of the accepted OCSP proof (LT).
+    pub ocsp_time: Option<DateTime<Utc>>,
 }
 
 impl SignatureValidation {
@@ -54,7 +57,7 @@ pub struct ValidationOptions {
     /// Signature, timestamp and OCSP certificates must chain to one of these.
     pub trusted_certs_der: Vec<Vec<u8>>,
     /// Time at which certificate validity is checked for B-level signatures.
-    /// Defaults to now. TODO: use timestamp/ocsp time for >= T-level.
+    /// Defaults to now.
     pub validation_time: Option<DateTime<Utc>>,
 }
 
@@ -116,7 +119,7 @@ pub fn validate(
         }
     };
 
-    // Rejects duplicate Ids.
+    // Reject duplicate Ids.
     let id_map = match xmldoc.build_id_map(&doc) {
         Ok(m) => m,
         Err(e) => {
@@ -133,13 +136,7 @@ pub fn validate(
     for sig_node in sig_nodes {
         let mut sv = SignatureValidation {
             signature_id: xml::attr(&doc, sig_node, "Id").map(str::to_owned),
-            profile: Profile::B,
-            errors: Vec::new(),
-            warnings: Vec::new(),
-            signer_cert_der: None,
-            signer_subject: None,
-            claimed_signing_time: None,
-            timestamp_time: None,
+            ..Default::default()
         };
 
         let core = dsig::verify_core(&doc, &id_map, sig_node, files, &mut sv.errors);
@@ -147,8 +144,14 @@ pub fn validate(
 
         let mut unsigned_node = None;
         if let (Some(sp_node), Some(cert_der)) = (core.sp_node, core.cert_der.as_deref()) {
-            let xa =
-                xades::check_signed_properties(&doc, sig_node, sp_node, cert_der, &mut sv.errors);
+            let xa = xades::check_signed_properties(
+                &doc,
+                sig_node,
+                sp_node,
+                cert_der,
+                &mut sv.errors,
+                &mut sv.warnings,
+            );
             sv.profile = xa.profile;
             sv.claimed_signing_time = xa.claimed_signing_time;
             unsigned_node = xa.unsigned_node;
@@ -174,21 +177,31 @@ pub fn validate(
             let keyinfo_extras: Vec<Certificate> = core
                 .extra_certs
                 .iter()
-                .filter_map(|der| Certificate::from_der(der).ok())
+                .filter_map(|der| match Certificate::from_der(der) {
+                    Ok(cert) => Some(cert),
+                    Err(_) => {
+                        sv.warnings
+                            .push("KeyInfo certificate does not parse".into());
+                        None
+                    }
+                })
                 .collect();
             let mut pool = keyinfo_extras.clone();
 
-            if matches!(sv.profile, Profile::T) {
+            if matches!(sv.profile, Profile::T | Profile::LT) {
                 if let Some(unsigned) = unsigned_node {
                     let out = ltv::verify_unsigned(
                         &doc,
                         sig_node,
                         unsigned,
+                        &leaf,
+                        &keyinfo_extras,
                         &trust,
                         &mut sv.errors,
                         &mut sv.warnings,
                     );
                     sv.timestamp_time = out.timestamp_time;
+                    sv.ocsp_time = out.ocsp_produced_at;
                     pool.extend(out.pool);
                 }
                 if sv.profile == Profile::T {
@@ -198,7 +211,10 @@ pub fn validate(
                 }
             }
 
-            let at = options.validation_time.unwrap_or_else(Utc::now);
+            let at = sv
+                .timestamp_time
+                .or(options.validation_time)
+                .unwrap_or_else(Utc::now);
             check_chain(&leaf, &pool, &trust, at, &mut sv.errors);
         }
 
@@ -210,14 +226,8 @@ pub fn validate(
 
 fn invalid_document(error: String) -> SignatureValidation {
     SignatureValidation {
-        signature_id: None,
-        profile: Profile::B,
         errors: vec![error],
-        warnings: Vec::new(),
-        signer_cert_der: None,
-        signer_subject: None,
-        claimed_signing_time: None,
-        timestamp_time: None,
+        ..Default::default()
     }
 }
 

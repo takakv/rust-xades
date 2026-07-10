@@ -1,3 +1,5 @@
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
 use bergshamra_xml::{Document, NodeId};
 
 pub(crate) fn is_element(doc: &Document<'_>, id: NodeId, ns_uri: &str, local: &str) -> bool {
@@ -55,4 +57,8 @@ pub(crate) fn text(doc: &Document<'_>, id: NodeId) -> String {
 /// Whether `node` is inside the subtree rooted at `root`.
 pub(crate) fn is_within(doc: &Document<'_>, root: NodeId, node: NodeId) -> bool {
     doc.descendants(root).into_iter().any(|id| id == node)
+}
+
+pub(crate) fn decode_b64(text: &str) -> Option<Vec<u8>> {
+    B64.decode(text.replace(['\n', '\r', '\t', ' '], "")).ok()
 }

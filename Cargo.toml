@@ -19,6 +19,7 @@ percent-encoding = "2.3.2"
 thiserror = "2.0.18"
 tsp-ltv = "0.3.1"
 x509-cert = "0.2.5"
+log = "0.4.33"
 
 [dev-dependencies]
 asice = "0.1.0"

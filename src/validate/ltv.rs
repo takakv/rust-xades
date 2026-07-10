@@ -1,8 +1,8 @@
-use base64::engine::general_purpose::STANDARD as B64;
-use base64::Engine;
 use bergshamra_c14n::C14nMode;
 use bergshamra_xml::{Document, NodeId};
 use chrono::{DateTime, Utc};
+use tsp_ltv::ltv::ocsp::check_revocation;
+use tsp_ltv::ltv::{parse_ocsp_response, ValidationStatus};
 use tsp_ltv::trust::TrustStore;
 use x509_cert::der::Decode;
 use x509_cert::Certificate;
@@ -12,36 +12,121 @@ use crate::{ns, xml};
 
 pub(crate) struct LtvOutcome {
     pub timestamp_time: Option<DateTime<Utc>>,
+    pub ocsp_produced_at: Option<DateTime<Utc>>,
     pub pool: Vec<Certificate>,
 }
 
 fn decode_b64_element(doc: &Document<'_>, node: NodeId) -> Option<Vec<u8>> {
-    B64.decode(xml::text(doc, node).replace(['\n', '\r', ' ', '\t'], ""))
-        .ok()
+    xml::decode_b64(&xml::text(doc, node))
 }
 
 pub(crate) fn verify_unsigned(
     doc: &Document<'_>,
     sig_node: NodeId,
     unsigned_node: NodeId,
+    leaf: &Certificate,
+    keyinfo_extras: &[Certificate],
     trust: &TrustStore,
     errors: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) -> LtvOutcome {
     let mut outcome = LtvOutcome {
         timestamp_time: None,
+        ocsp_produced_at: None,
         pool: Vec::new(),
     };
 
+    // 5.4.2 - The CertificateValues qualifying property
+    for node in xml::descendants(doc, unsigned_node, ns::XADES, "EncapsulatedX509Certificate") {
+        match decode_b64_element(doc, node).and_then(|der| Certificate::from_der(&der).ok()) {
+            Some(cert) => outcome.pool.push(cert),
+            None => errors.push("unparseable encapsulated certificate".into()),
+        }
+    }
+
     // 5.3 - The SignatureTimeStamp qualifying property
-    match xml::children(doc, unsigned_node, ns::XADES, "SignatureTimeStamp").as_slice() {
-        [] => errors.push("missing SignatureTimeStamp".into()),
-        [tst_node, rest @ ..] => {
-            if !rest.is_empty() {
-                warnings.push("multiple SignatureTimeStamps; verifying the first".into());
+    let tst_nodes = xml::children(doc, unsigned_node, ns::XADES, "SignatureTimeStamp");
+    if tst_nodes.is_empty() {
+        errors.push("missing SignatureTimeStamp".into());
+    } else {
+        let mut earliest: Option<DateTime<Utc>> = None;
+        let mut failures: Vec<(usize, String)> = Vec::new();
+        for (i, &tst_node) in tst_nodes.iter().enumerate() {
+            match verify_signature_timestamp(doc, sig_node, tst_node, trust, &outcome.pool) {
+                Ok(t) => earliest = Some(earliest.map_or(t, |e| e.min(t))),
+                Err(e) => failures.push((i + 1, e)),
             }
-            verify_signature_timestamp(doc, sig_node, *tst_node, trust, &outcome.pool.clone())
-                .map_or_else(|e| errors.push(e), |t| outcome.timestamp_time = Some(t));
+        }
+        if let Some(t) = earliest {
+            outcome.timestamp_time = Some(t);
+            for (n, e) in &failures {
+                warnings.push(format!("SignatureTimeStamp {n} did not verify: {e}"));
+            }
+        } else {
+            let summary = failures
+                .iter()
+                .map(|(n, e)| format!("#{n}: {e}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            errors.push(format!("no SignatureTimeStamp verified ({summary})"));
+        }
+    }
+
+    let at = outcome.timestamp_time;
+    let ocsp_nodes = xml::descendants(doc, unsigned_node, ns::XADES, "EncapsulatedOCSPValue");
+    if ocsp_nodes.is_empty() {
+        if let Some(revocation_values) =
+            xml::child(doc, unsigned_node, ns::XADES, "RevocationValues")
+        {
+            if xml::child(doc, revocation_values, ns::XADES, "CRLValues").is_some() {
+                errors.push("CRLs not supported".into());
+            } else {
+                errors.push("missing OCSP response".into());
+            }
+        }
+        return outcome;
+    }
+
+    let issuer = outcome
+        .pool
+        .iter()
+        .chain(keyinfo_extras.iter())
+        .find(|c| c.tbs_certificate.subject == leaf.tbs_certificate.issuer)
+        .cloned();
+    let Some(issuer) = issuer else {
+        errors.push("cannot verify OCSP: issuer certificate is missing".into());
+        return outcome;
+    };
+
+    if ocsp_nodes.len() > 1 {
+        errors.push("multiple OCSP responses not supported".to_string());
+    }
+    if ocsp_nodes.len() == 1 {
+        let Some(der) = decode_b64_element(doc, ocsp_nodes[0]) else {
+            errors.push("EncapsulatedOCSPValue is not valid base64".into());
+            return outcome;
+        };
+        match check_revocation(&der, leaf, &issuer, None, at) {
+            Ok(ValidationStatus::Valid { .. }) => {
+                if let Ok(parsed) = parse_ocsp_response(&der) {
+                    outcome.ocsp_produced_at = Some(parsed.produced_at);
+                    for cert_der in &parsed.embedded_certs_der {
+                        if let Ok(c) = Certificate::from_der(cert_der) {
+                            outcome.pool.push(c);
+                        }
+                    }
+                }
+            }
+            Ok(other) => errors.push(format!("revocation status: {other:?}")),
+            Err(e) => errors.push(format!("OCSP response: {e}")),
+        }
+    }
+
+    if let (Some(ts), Some(ocsp)) = (outcome.timestamp_time, outcome.ocsp_produced_at) {
+        if ocsp < ts {
+            errors.push(format!(
+                "OCSP proof ({ocsp}) predates the signature timestamp ({ts})"
+            ));
         }
     }
 

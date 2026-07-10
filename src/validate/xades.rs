@@ -18,6 +18,7 @@ pub(crate) fn check_signed_properties(
     sp_node: NodeId,
     cert_der: &[u8],
     errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
 ) -> XadesOutcome {
     let mut outcome = XadesOutcome {
         profile: Profile::B,
@@ -93,15 +94,71 @@ pub(crate) fn check_signed_properties(
         None => errors.push("missing SigningCertificate".into()),
     }
 
-    // TODO: add 5.2.4 DataObjectFormat verification
-
     if let Some(unsigned) = outcome.unsigned_node {
         let has_tst = xml::child(doc, unsigned, ns::XADES, "SignatureTimeStamp").is_some();
-        outcome.profile = match has_tst {
-            true => Profile::T,
+        let has_revocation = xml::child(doc, unsigned, ns::XADES, "RevocationValues").is_some();
+        outcome.profile = match (has_tst, has_revocation) {
+            (true, true) => Profile::LT,
+            (true, false) => Profile::T,
             _ => Profile::B,
         };
     }
 
+    check_data_object_formats(doc, sig_node, sp_node, warnings);
+
     outcome
+}
+
+fn check_data_object_formats(
+    doc: &Document<'_>,
+    sig_node: NodeId,
+    sp_node: NodeId,
+    warnings: &mut Vec<String>,
+) {
+    let Some(signed_info) = xml::child(doc, sig_node, ns::DSIG, "SignedInfo") else {
+        return;
+    };
+    let references = xml::children(doc, signed_info, ns::DSIG, "Reference");
+    let data_object_ids: Vec<&str> = references
+        .iter()
+        .filter(|&&r| xml::attr(doc, r, "Type") != Some(ns::TYPE_SIGNED_PROPERTIES))
+        .filter_map(|&r| xml::attr(doc, r, "Id"))
+        .collect();
+
+    let formats: Vec<NodeId> = xml::child(doc, sp_node, ns::XADES, "SignedDataObjectProperties")
+        .map(|sdop| xml::children(doc, sdop, ns::XADES, "DataObjectFormat"))
+        .unwrap_or_default();
+    let object_references: Vec<&str> = formats
+        .iter()
+        .filter_map(|&f| xml::attr(doc, f, "ObjectReference"))
+        .collect();
+
+    // Every data-object reference must have a format.
+    for &reference in &references {
+        if xml::attr(doc, reference, "Type") == Some(ns::TYPE_SIGNED_PROPERTIES) {
+            continue;
+        }
+        let ref_id = xml::attr(doc, reference, "Id").unwrap_or("");
+        let expected = format!("#{ref_id}");
+        if !object_references.contains(&expected.as_str()) {
+            let uri = xml::attr(doc, reference, "URI").unwrap_or("");
+            warnings.push(format!(
+                "'{uri:?}' not referenced in SignedDataObjectProperties",
+            ));
+        }
+    }
+
+    // Every format must resolve to a reference and have a mimetype.
+    for &format in &formats {
+        let object_ref = xml::attr(doc, format, "ObjectReference").unwrap_or("");
+        let resolves = object_ref
+            .strip_prefix('#')
+            .is_some_and(|id| data_object_ids.contains(&id));
+        if !resolves {
+            warnings.push(format!("Unknown ds:Reference '{object_ref:?}'"));
+        }
+        if xml::child(doc, format, ns::XADES, "MimeType").is_none() {
+            warnings.push(format!("No MimeType specified for '{object_ref:?}'"));
+        }
+    }
 }

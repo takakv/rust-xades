@@ -45,6 +45,7 @@ fn validates_xades_lt_container() {
         sig.errors,
         sig.warnings
     );
+    assert_eq!(sig.profile, Profile::LT);
 }
 
 #[test]
