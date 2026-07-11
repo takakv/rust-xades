@@ -1,0 +1,17 @@
+[package]
+name = "xades-pkcs11"
+version = "0.1.0"
+edition = "2024"
+description = "PKCS#11 hardware signing for the xades crate"
+license = "Apache-2.0"
+keywords = ["pkcs11", "xades", "hsm"]
+categories = ["cryptography"]
+
+[dependencies]
+xades = { path = "..", version = "0.2", default-features = false }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+kryptering = "0.4"
+cryptoki = "0.12"
+zeroize = "1"
+x509-cert = "0.2"

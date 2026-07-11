@@ -31,6 +31,10 @@ bergshamra-core = "0.7.0"
 asice = "0.2.1"
 rcgen = "0.14.8"
 
+[workspace]
+members = ["pkcs11"]
+exclude = ["vendor"]
+
 # tsp-ltv 0.3.1 only supports <= 64-bit nonces and select ECDSA-SHA2 combinations
 [patch.crates-io]
 tsp-ltv = { git = "https://github.com/takakv/tsp-ltv.git" }
