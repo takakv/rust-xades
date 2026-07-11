@@ -111,3 +111,59 @@ fn tampered_data_file_fails() {
         sig.errors
     );
 }
+
+#[test]
+fn unsigned_extra_file_fails() {
+    let pki = test_pki();
+    let xml = signed_xml(&pki);
+
+    let with_extra = [
+        FILES[0],
+        DataObject {
+            name: "sneaky.txt",
+            mime_type: "text/plain",
+            content: b"added later",
+        },
+    ];
+    let sig = single(validate(&xml, &with_extra, &options_with_anchor(&pki.ca_der)).unwrap());
+    assert!(
+        sig.errors.iter().any(|e| e.contains("not covered")),
+        "errors: {:?}",
+        sig.errors
+    );
+}
+
+#[test]
+fn untrusted_chain_fails() {
+    let pki = test_pki();
+    let other = test_pki();
+    let xml = signed_xml(&pki);
+
+    let sig = single(validate(&xml, FILES, &options_with_anchor(&other.ca_der)).unwrap());
+    assert!(!sig.is_valid());
+    assert!(
+        sig.errors.iter().any(|e| e.contains("chain")),
+        "errors: {:?}",
+        sig.errors
+    );
+}
+
+#[test]
+fn tampered_signing_time_fails() {
+    let pki = test_pki();
+    let xml = signed_xml(&pki);
+
+    let idx = xml.find("<xades:SigningTime>").unwrap() + "<xades:SigningTime>".len();
+    let mut chars: Vec<char> = xml.chars().collect();
+    chars[idx + 3] = if chars[idx + 3] == '1' { '2' } else { '1' };
+    let tampered_xml: String = chars.into_iter().collect();
+
+    let sig = single(validate(&tampered_xml, FILES, &options_with_anchor(&pki.ca_der)).unwrap());
+    assert!(
+        sig.errors
+            .iter()
+            .any(|e| e.contains("SignedProperties digest")),
+        "errors: {:?}",
+        sig.errors
+    );
+}
