@@ -94,3 +94,29 @@ fn container_round_trip_with_signature() {
     assert_eq!(reopened.signatures().len(), 1);
     assert!(reopened.signatures()[0].xml.contains("XAdESSignatures"));
 }
+
+#[test]
+fn two_phase_equals_one_shot() {
+    let signer = test_signer();
+
+    let prepared = xades::prepare_signature(
+        FILES,
+        xades::Signer::certificate_der(&signer),
+        xades::Signer::algorithm_uri(&signer),
+        &SigningOptions::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        prepared.digest_to_sign,
+        bergshamra_crypto::digest::digest(xades::ns::SHA256, &prepared.signed_info).unwrap()
+    );
+
+    let before = prepared.signed_info.clone();
+
+    let sig = xades::Signer::sign(&signer, &prepared.signed_info).unwrap();
+    let xml = prepared.finalize(&sig).unwrap().into_xml();
+    let after = c14n_subtree(&xml, xades::ns::DSIG, "SignedInfo", C14nMode::Inclusive11);
+
+    assert_eq!(before, after);
+}
