@@ -61,6 +61,8 @@ pub struct ValidationOptions {
     /// Time at which certificate validity is checked for B-level signatures.
     /// Defaults to now.
     pub validation_time: Option<DateTime<Utc>>,
+    /// Minimum baseline profile the signature must reach.
+    pub required_profile: Option<Profile>,
 }
 
 impl Default for ValidationOptions {
@@ -68,7 +70,17 @@ impl Default for ValidationOptions {
         Self {
             trusted_certs_der: Vec::new(),
             validation_time: None,
+            required_profile: None,
         }
+    }
+}
+
+/// Rank of a baseline profile for the `required_profile` comparison.
+fn rank(profile: Profile) -> u8 {
+    match profile {
+        Profile::B => 1,
+        Profile::T => 2,
+        Profile::LT => 3,
     }
 }
 
@@ -218,6 +230,15 @@ pub fn validate(
                 .or(options.validation_time)
                 .unwrap_or_else(Utc::now);
             check_chain(&leaf, &pool, &trust, at, &mut sv.errors);
+        }
+
+        if let Some(required) = options.required_profile
+            && rank(sv.profile) < rank(required)
+        {
+            sv.errors.push(format!(
+                "signature is {:?} but {required:?} is required",
+                sv.profile
+            ));
         }
 
         results.push(sv);
