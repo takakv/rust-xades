@@ -63,7 +63,18 @@ pub(crate) fn check_signed_properties(
 
     // 5.2.2 - The SigningCertificateV2 qualifying property
     // Estonia still uses SigningCertificate instead of SigningCertificateV2 for some reason...
-    let cert_elem = xml::child(doc, ssp, ns::XADES, "SigningCertificate");
+    let cert_elem = match xml::child(doc, ssp, ns::XADES, "SigningCertificateV2") {
+        Some(n) => Some(n),
+        None => {
+            let fallback = xml::child(doc, ssp, ns::XADES, "SigningCertificate");
+            if fallback.is_some() {
+                warnings.push(
+                    "using deprecated SigningCertificate instead of SigningCertificateV2".into(),
+                );
+            }
+            fallback
+        }
+    };
     match cert_elem.and_then(|sc| xml::child(doc, sc, ns::XADES, "Cert")) {
         Some(cert_node) => {
             let digest_node = xml::child(doc, cert_node, ns::XADES, "CertDigest");
@@ -91,7 +102,7 @@ pub(crate) fn check_signed_properties(
                 }
             }
         }
-        None => errors.push("missing SigningCertificate".into()),
+        None => errors.push("missing SigningCertificate(V2)".into()),
     }
 
     if let Some(unsigned) = outcome.unsigned_node {
