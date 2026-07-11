@@ -8,6 +8,8 @@ mod xml;
 
 pub use crypto::{Signer, SoftwareSigner};
 pub use error::{LibError, Result};
+#[cfg(feature = "network")]
+pub use sig::LtConfig;
 pub use sig::{prepare_signature, sign, CreatedSignature, PreparedSignature, SigningOptions};
 pub use validate::{validate, Profile, SignatureValidation, ValidationOptions};
 
