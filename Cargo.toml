@@ -2,7 +2,7 @@
 name = "xades"
 version = "0.2.0"
 edition = "2024"
-description = "Verify and create XAdES baseline signatures"
+description = "Verify and construct XAdES baseline signatures"
 license = "Apache-2.0"
 homepage = "https://github.com/takakv/rust-xades"
 repository = "https://github.com/takakv/rust-xades"
@@ -24,7 +24,6 @@ thiserror = "2.0.18"
 tokio = { version = "1", features = ["rt"], optional = true }
 tsp-ltv = "0.3.1"
 x509-cert = "0.2.5"
-log = "0.4.33"
 der = "0.7.10"
 bergshamra-core = "0.7.0"
 
