@@ -65,3 +65,16 @@ fn validates_xades_t_container() {
     );
     assert_eq!(sig.profile, Profile::T);
 }
+
+#[test]
+fn tampered_fixture_fails() {
+    let container = Container::open_file(XADES_LT).unwrap();
+    let tampered = [DataObject {
+        name: "test.txt",
+        mime_type: "text/plain",
+        content: b"This is a NOT test file.",
+    }];
+
+    let results = validate(&container.signatures()[0].xml, &tampered, &trust_options()).unwrap();
+    assert!(!results[0].is_valid());
+}
