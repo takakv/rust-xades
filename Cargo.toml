@@ -10,7 +10,7 @@ keywords = ["xades", "asice", "eidas", "bdoc", "digidoc"]
 
 [features]
 default = ["network"]
-network = ["dep:tokio"]
+network = ["dep:tokio", "tsp-ltv/net"]
 
 [dependencies]
 base64 = "0.22.1"
@@ -22,7 +22,10 @@ chrono = "0.4.45"
 percent-encoding = "2.3.2"
 thiserror = "2.0.18"
 tokio = { version = "1", features = ["rt"], optional = true }
-tsp-ltv = "0.3.1"
+# default-features = false keeps `reqwest` out of the dependency tree. The
+# token and response parsing this crate needs does not require the network;
+# only the fetching clients do, and those return with the `network` feature.
+tsp-ltv = { version = "0.3.1", default-features = false, features = ["tsp", "ltv"] }
 x509-cert = "0.2.5"
 der = "0.7.10"
 bergshamra-core = "0.7.0"
